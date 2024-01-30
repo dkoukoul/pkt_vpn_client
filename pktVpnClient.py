@@ -372,6 +372,7 @@ def main():
     if server:
         while True:
             port = int(input("Choose a port for reverse VPN: "))
+            #TODO: Check if port is available
             if port not in excluded_reverse_vpn_ports:
                 break
             else:
@@ -383,6 +384,7 @@ def main():
         # Once we are connected we can request the Reverse VPN port
         if status:
             request_reverse_vpn_port(server["ip"],port)
+            #TODO: Add port to nftables
         else:
             print("VPN Connection failed. Aborting...")
 
