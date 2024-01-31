@@ -9,7 +9,7 @@ import subprocess
 import logging
 import requests
 import bencode
-
+import re
 
 AUTHORIZED: bool = False
 
@@ -360,6 +360,28 @@ def request_reverse_vpn_port(ip: str, port: int):
     print(response.status_code)
 
 
+def is_port_available(port: int) -> bool:
+    """Check if port is available"""
+    command = f"netstat -tuln | grep :{port} "
+    process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    output, error = process.communicate()
+
+    if error:
+        print(f"Error checking port {port}: {error}")
+        return False
+    # Decode output from bytes to string and split it into lines
+    lines = output.decode().split('\n')
+    for line in lines:
+        # Use a regular expression to extract the port number
+        match = re.search(r':(\d+)', line)
+        if match:
+            extracted_port = int(match.group(1))
+            if extracted_port == port:
+                return False
+
+    return True
+
+
 def main():
     """Maing Function"""
     logger.info("Starting PKT VPN client")
@@ -372,8 +394,10 @@ def main():
     if server:
         while True:
             port = int(input("Choose a port for reverse VPN: "))
-            #TODO: Check if port is available
-            if port not in excluded_reverse_vpn_ports:
+            # Check if port is available
+            if not is_port_available(port):
+                print("This port is not available. Please choose another port.")
+            elif port not in excluded_reverse_vpn_ports:
                 break
             else:
                 print("This port can not be used. Please choose another port.")
@@ -384,7 +408,14 @@ def main():
         # Once we are connected we can request the Reverse VPN port
         if status:
             request_reverse_vpn_port(server["ip"],port)
-            #TODO: Add port to nftables
+            # Add port to nftables
+            command = f"nft add rule ip filter INPUT tcp dport {port} accept"
+            process = subprocess.Popen(command.split(), stdout=subprocess.PIPE)
+            _, error = process.communicate()
+            if error:
+                print(f"Error adding port {port} to nftables: {error}")
+            else:
+                print(f"Successfully added port {port} to nftables")
         else:
             print("VPN Connection failed. Aborting...")
 
