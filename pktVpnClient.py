@@ -21,7 +21,7 @@ formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s ')
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 
-CJDNS_PATH = "/server/cjdns/"
+CJDNS_PATH = "/var/www/cjdns/"
 excluded_reverse_vpn_ports = [22, 80, 443]
 
 def send_udp(message):
@@ -228,10 +228,10 @@ def connect_vpn_server(public_key, vpn_exit_ip, vpn_name):
     public_key (str): The public key used for VPN authorization.
     vpn_exit_ip (str): The IP address of the VPN exit node.
     vpn_name (str): The name of the VPN.
-    is_active (bool): A flag indicating whether the VPN is active.
 
     Returns:
-    None
+    public_key (str): The public key used for VPN authorization.
+    status (bool): The status of the VPN connection.
     """
     global AUTHORIZED
     print("Connecting to ", vpn_name, "...")
@@ -396,18 +396,23 @@ def main():
             port = int(input("Choose a port for reverse VPN: "))
             # Check if port is available
             if not is_port_available(port):
-                print("This port is not available. Please choose another port.")
+                print("This port is already allocated.")
+                answer = input("Are you sure you want to use this port? (y/n)")
+                if answer == "y":
+                    break
+                else:
+                    continue
             elif port not in excluded_reverse_vpn_ports:
                 break
             else:
                 print("This port can not be used. Please choose another port.")
 
-        public_key, status = connect_vpn_server(server["publicKey"], server["ip"], server["name"])
+        public_key, status = connect_vpn_server(server["public_key"], server["public_ip"], server["name"])
         print("VPN Connected Status: ", status)
-        authorize_vpn_every_hour(public_key)
+        
         # Once we are connected we can request the Reverse VPN port
         if status:
-            request_reverse_vpn_port(server["ip"],port)
+            request_reverse_vpn_port(server["public_ip"],port)
             # Add port to nftables
             command = f"nft add rule ip filter INPUT tcp dport {port} accept"
             process = subprocess.Popen(command.split(), stdout=subprocess.PIPE)
@@ -419,6 +424,7 @@ def main():
         else:
             print("VPN Connection failed. Aborting...")
 
+        authorize_vpn_every_hour(public_key)
     else:
         print("No VPN servers found.")
 
