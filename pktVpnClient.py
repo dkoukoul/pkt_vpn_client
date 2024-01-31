@@ -10,6 +10,7 @@ import logging
 import requests
 import bencode
 import re
+import netifaces as ni
 
 AUTHORIZED: bool = False
 
@@ -51,6 +52,7 @@ def get_cjdns_signature(bytes_):
     digest = hashlib.sha256(bytes_).digest()
     digest_str = base64.b64encode(digest).decode('utf-8')
     signature = sign(digest_str)
+    #print("Cjdns signature:", signature['signature'])
     return signature['signature']
 
 
@@ -349,15 +351,26 @@ def check_cjdns_running() -> bool:
         logger.exception("status failed: %s", error.output)
         return False
 
+def get_cjdns_ipv4(interface):
+    try:
+        ipv4 = ni.ifaddresses(interface)[ni.AF_INET][0]['addr']
+    except ValueError:
+        print(f"No IPv4 address found for {interface}")
+        return None
+    return ipv4
 
 def request_reverse_vpn_port(ip: str, port: int):
     """Request Reverse VPN Port"""
     print("Requesting reverse VPN port: ", port)
     url = "http://"+ip+":8099/api/0.4/server/reversevpn/"
-    data = {"port": port}
-    headers = {"Content-Type": "application/json"}
-    response = requests.post(url, data=json.dumps(data), headers=headers, timeout=10)
-    print(response.status_code)
+    headers = {
+        "Content-Type": "application/json; charset=utf-8"
+    }
+    # Get local 10.xx.xx.xx ip
+    cjdns_ip = get_cjdns_ipv4("tun0")
+
+    response = requests.post(url, json={"port":port, "ip":cjdns_ip}, headers=headers, timeout=10)
+    print("Reverse VPN response: "+str(response.status_code) + " " + response.text)
 
 
 def is_port_available(port: int) -> bool:
