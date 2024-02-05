@@ -1,5 +1,3 @@
-#!/bin/python
-
 import hashlib
 import base64
 import time
@@ -22,7 +20,7 @@ formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s ')
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 
-CJDNS_PATH = "/var/www/cjdns/"
+CJDNS_PATH = "/home/dimitris/Code/cjdns/"
 excluded_reverse_vpn_ports = [22, 80, 443]
 
 def send_udp(message):

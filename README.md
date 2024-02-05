@@ -25,11 +25,17 @@ The script also includes a function to authorize the VPN every hour. This functi
 
 ## Usage
 
-To use this script, first set the CJDNS_PATH variable in the script to the path of your cjdns folder. 
-Then simply run it with sudo:
+To use this script, first edit the CJDNS_PATH variable in the script to the path of your cjdns folder. 
+Set up venv with:
 
 ```bash
-sudo ./pktVpnClient.py
+./create_venv.sh
+```
+
+Then run the script:
+
+```bash
+./runPktVpnClient.sh
 ```
 
 Follow the prompts to choose a VPN server and a port for the reverse VPN. The script will handle the rest.
