@@ -21,9 +21,14 @@ import (
 	"github.com/zeebo/bencode"
 )
 
-var excludedReverseVPNPorts = []int{8080, 9090} // Example excluded ports
-const cjdnsPath = "/home/dimitris/Code/cjdns/"  // Path to cjdroute directory
 var AUTHORIZED = false
+
+type Config struct {
+	CjdnsPath               string `json:"cjdnsPath"`
+	ExcludedReverseVPNPorts []int  `json:"excludedReverseVPNPorts"`
+}
+
+var config Config
 
 type VPNServer struct {
 	PublicKey           string   `json:"public_key"`
@@ -455,14 +460,15 @@ func authorizeVPNEveryHour(publicKey string) {
 }
 
 func startCjdns() {
-	cjdrouteConf, err := ioutil.ReadFile(cjdnsPath + "cjdroute.conf")
+
+	cjdrouteConf, err := ioutil.ReadFile(config.CjdnsPath + "cjdroute.conf")
 	if err != nil {
 		fmt.Println("Error reading cjdroute.conf:", err)
 		return
 	}
 
 	fmt.Println("Starting cjdns ...")
-	cmd := exec.Command(cjdnsPath + "cjdroute")
+	cmd := exec.Command(config.CjdnsPath + "cjdroute")
 	cmd.Stdin = ioutil.NopCloser(strings.NewReader(string(cjdrouteConf)))
 
 	if err := cmd.Start(); err != nil {
@@ -605,7 +611,7 @@ func isPortAvailable(port int) bool {
 }
 
 func isExcludedReverseVPNPort(port int) bool {
-	for _, excludedPort := range excludedReverseVPNPorts {
+	for _, excludedPort := range config.ExcludedReverseVPNPorts {
 		if port == excludedPort {
 			return true
 		}
@@ -625,8 +631,29 @@ func addPortToNFTables(port int) error {
 	return nil
 }
 
+func loadconfig() error {
+	file, err := os.Open("config.json")
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	decoder := json.NewDecoder(file)
+	err = decoder.Decode(&config)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func main() {
 	log.Println("Starting PKT VPN client")
+
+	err := loadconfig()
+	if err != nil {
+		fmt.Println("Error loading config.json:", err)
+		return
+	}
 
 	if !checkCjdnsRunning() {
 		fmt.Println("Cjdns is not running")
