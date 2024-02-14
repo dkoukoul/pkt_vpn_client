@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -13,19 +14,26 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/sirupsen/logrus"
 	"github.com/zeebo/bencode"
 )
 
-var AUTHORIZED = false
+var logger = logrus.New()
+var reconfig = flag.Bool("reconfig", false, "Run and reset configuration")
 
+type Cache struct {
+	SelectedServer  string `json:"selectedServer"`
+	ReverseVPNPorts []int  `json:"reverseVPNPorts"`
+}
 type Config struct {
+	ServerPort              int    `json:"serverPort"`
 	CjdnsPath               string `json:"cjdnsPath"`
 	ExcludedReverseVPNPorts []int  `json:"excludedReverseVPNPorts"`
+	Cache                   Cache  `json:"cache"`
 }
 
 var config Config
@@ -149,15 +157,12 @@ func requestAuthorization(pubKey, signature, dateStr string) int {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusOK {
+	if (resp.StatusCode == http.StatusOK) || (resp.StatusCode == http.StatusCreated) {
 		fmt.Println("VPN client Authorized")
-		//logger.Infof("VPN Authorized: %s", pubKey)
-		AUTHORIZED = true
+		logger.Infof("VPN Authorized: %s", pubKey)
 	} else {
 		fmt.Println("VPN Auth request failed with status code", resp.StatusCode)
-		fmt.Println("Response:", resp.Status)
-		//logger.Infof("Request failed with status code %d", resp.StatusCode)
-		AUTHORIZED = false
+		logger.Errorf("Request failed with status code %d and message %s", resp.StatusCode, resp.Status)
 	}
 
 	return resp.StatusCode
@@ -201,7 +206,7 @@ func addCjdnsPeer(peer CjdnsPeeringLine) {
 	// Check if address is set correctly
 	if net.ParseIP(peer.IP) == nil {
 		fmt.Println("Invalid IPv4 address:", peer.IP)
-		//logger.Errorf("Invalid IPv4 address: %s", peer.IP)
+		logger.Errorf("Invalid IPv4 address: %s", peer.IP)
 		return
 	}
 
@@ -260,17 +265,20 @@ func routeGenAddException(address string) {
 
 func authorizeVPN(vpnKey string) int {
 	fmt.Println("Authorizing VPN ...")
+	logger.Infof("Authorizing VPN %s", vpnKey)
 	now := time.Now().UnixNano() / int64(time.Millisecond)
 	jsonDate, err := json.Marshal(map[string]int64{"date": now})
 	if err != nil {
 		fmt.Println("Error encoding JSON date:", err)
+		logger.Errorf("Error encoding JSON date: %v", err)
 		return 0
 	}
-	// fmt.Println("JSON Date:", string(jsonDate))
+
 	signature := getCjdnsSignature(jsonDate)
-	// fmt.Println("Cjdns signature:", signature)
+
 	if signature == "" {
 		fmt.Println("Failed to get Cjdns signature")
+		logger.Errorf("Failed to get Cjdns signature")
 		return 0
 	}
 
@@ -299,19 +307,19 @@ func ipTunnelConnectTo(node string) {
 func checkStatus() bool {
 	result, err := exec.Command("ip", "route", "get", "8.8.8.8").Output()
 	if err != nil {
-		//logger.Errorf("status failed: %v", err)
+		logger.Errorf("status failed: %v", err)
 		return false
 	}
 	return strings.Contains(string(result), "dev tun0")
 }
 
-func getVPNServers() *VPNServer {
+func getListOfVPNServers() []VPNServer {
 	url := "https://vpn.anode.co/api/0.3/vpn/servers/false/"
 
 	response, err := http.Get(url)
 	if err != nil {
 		fmt.Println("Failed to fetch servers:", err)
-		// logger.Errorf("Failed to fetch servers: %v", err)
+		logger.Errorf("Failed to fetch servers: %v", err)
 		return nil
 	}
 	defer response.Body.Close()
@@ -323,27 +331,11 @@ func getVPNServers() *VPNServer {
 			return nil
 		}
 
-		for i, server := range servers {
-			fmt.Printf("%d. %s\n", i+1, server.Name)
-		}
-
-		var chosenIndex int
-		fmt.Print("Choose a server by number: ")
-		if _, err := fmt.Scan(&chosenIndex); err != nil {
-			fmt.Println("Error reading input:", err)
-			return nil
-		}
-
-		if chosenIndex < 1 || chosenIndex > len(servers) {
-			fmt.Println("Invalid server index")
-			return nil
-		}
-
-		return &servers[chosenIndex-1]
+		return servers
 	}
 
 	fmt.Println("Failed to fetch servers:", response.StatusCode)
-	// logger.Errorf("Failed to fetch servers: %d", response.StatusCode)
+	logger.Errorf("Failed to fetch servers: %d", response.StatusCode)
 	return nil
 }
 
@@ -393,7 +385,8 @@ func connectVPNServer(publicKey, vpnExitIP, vpnName string) (string, bool) {
 	peers := getCjdnsPeeringLines()
 	for _, peer := range peers {
 		if peer.IP == vpnExitIP {
-			fmt.Println("Adding Cjdns Peer:", peer.IP)
+			// fmt.Println("Adding Cjdns Peer:", peer.IP)
+			logger.Infof("Adding Cjdns Peer: %s", peer.IP)
 			addCjdnsPeer(peer)
 		}
 	}
@@ -403,27 +396,27 @@ func connectVPNServer(publicKey, vpnExitIP, vpnName string) (string, bool) {
 	tries := 0
 	for !connectionEstablished && tries < 10 {
 		time.Sleep(2 * time.Second)
-		// fmt.Println("Checking if connection is established for ", publicKey)
 		connectionEstablished = checkConnectionEstablished(publicKey)
 		tries++
 	}
 
-	// logger.Infof("%s: Connection Established: %v", vpnName, connectionEstablished)
+	logger.Infof("%s: Connection Established: %v", vpnName, connectionEstablished)
 
 	// Authorize VPN
 	tries = 0
-	for !AUTHORIZED && tries < 5 {
+
+	for tries < 5 {
 		response := authorizeVPN(publicKey)
 		if response != 200 && response != 201 {
-			//fmt.Println("Abort testing for this VPN Server.")
-			// logger.Info("Abort connection...")
+			logger.Info("Authorization failed")
+		} else {
+			break
 		}
-
 		time.Sleep(5 * time.Second)
 		tries++
 	}
 
-	fmt.Println("Connecting cjdns tunnel ...")
+	logger.Info("Connecting cjdns tunnel ...")
 	ipTunnelConnectTo(publicKey)
 	routeGenAddException(vpnExitIP)
 	time.Sleep(3 * time.Second)
@@ -432,48 +425,29 @@ func connectVPNServer(publicKey, vpnExitIP, vpnName string) (string, bool) {
 	for !status && tries < 10 {
 		time.Sleep(10 * time.Second)
 		status = checkStatus()
+		logger.Infof("VPN Status: %v", status)
 		tries++
 	}
 
 	return publicKey, status
 }
 
-func authorizeVPNEveryHour(publicKey string) {
-	for {
-		time.Sleep(time.Hour)
-		if !checkCjdnsRunning() {
-			startCjdns()
-		}
-
-		tries := 0
-		for !AUTHORIZED && tries < 5 {
-			response := authorizeVPN(publicKey)
-			if response != 200 && response != 201 {
-				fmt.Println("Abort testing for this VPN Server.")
-				// logger.Info("Abort connection...")
-			}
-
-			time.Sleep(5 * time.Second)
-			tries++
-		}
-	}
-}
-
 func startCjdns() {
-
 	cjdrouteConf, err := ioutil.ReadFile(config.CjdnsPath + "cjdroute.conf")
 	if err != nil {
 		fmt.Println("Error reading cjdroute.conf:", err)
-		return
+		logger.Errorf("Error reading cjdroute.conf: %v", err)
+		os.Exit(1)
 	}
 
-	fmt.Println("Starting cjdns ...")
-	cmd := exec.Command(config.CjdnsPath + "cjdroute")
+	logger.Info("Starting cjdns ...")
+	cmd := exec.Command("sudo", config.CjdnsPath+"cjdroute")
 	cmd.Stdin = ioutil.NopCloser(strings.NewReader(string(cjdrouteConf)))
 
 	if err := cmd.Start(); err != nil {
 		fmt.Println("Error starting cjdns:", err)
-		return
+		logger.Errorf("Error starting cjdns: %v", err)
+		os.Exit(1)
 	}
 
 	time.Sleep(2 * time.Second) // Wait for 2 seconds for cjdns to start
@@ -483,33 +457,105 @@ func checkCjdnsRunning() bool {
 	cmd := exec.Command("pgrep", "cjdroute")
 	output, err := cmd.Output()
 	if err != nil {
-		fmt.Println("Error checking if Cjdns is running:", err)
+		logger.Info("Cjdns is not running")
 		return false
 	}
 
 	if len(strings.TrimSpace(string(output))) > 0 {
-		fmt.Println("Cjdns is running")
+		logger.Info("Cjdns is running")
 		return true
 	} else {
-		fmt.Println("Cjdns is NOT running")
+		logger.Info("Cjdns is not running")
 		return false
 	}
 }
 
-func askPort() int {
+func promptUserforConfig() {
+	logger.Info("Prompting user for config ...")
+	promptUserforCjdnsPath()
+	promptUserForExcludedPorts()
+	servers := getListOfVPNServers()
+	promptUserforServer(servers)
+	promptUserforReversePort()
+}
+
+func promptUserForExcludedPorts() {
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Print("Choose a port for reverse VPN (empty to skip): ")
+	fmt.Println("Enter the ports to be excluded, separated by commas:")
 	text, _ := reader.ReadString('\n')
 	text = strings.TrimSpace(text)
-	fmt.Println(text)
+	ports := strings.Split(text, ",")
+	for _, port := range ports {
+		port = strings.TrimSpace(port)
+		iport, err := strconv.Atoi(port)
+		if err != nil {
+			fmt.Printf("Invalid port %s\n", port)
+			logger.Error("Failed to convert port to integer")
+		}
+		config.ExcludedReverseVPNPorts = append(config.ExcludedReverseVPNPorts, iport)
+	}
+}
+
+func promptUserforCjdnsPath() {
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print("Enter the path to cjdroute and cjdroute.conf: ")
+	text, _ := reader.ReadString('\n')
+	text = strings.TrimSpace(text)
+	//Make sure path ends with a backslash
+	if !strings.HasSuffix(text, "/") {
+		text += "/"
+	}
+	config.CjdnsPath = text
+}
+
+func promptUserforServer(servers []VPNServer) error {
+	for i, server := range servers {
+		fmt.Printf("%d. %s\n", i+1, server.Name)
+	}
+
+	var chosenIndex int
+	fmt.Print("Choose a server by number: ")
+	if _, err := fmt.Scan(&chosenIndex); err != nil {
+		fmt.Println("Error reading input:", err)
+		return err
+	}
+
+	if chosenIndex < 1 || chosenIndex > len(servers) {
+		fmt.Println("Invalid server index")
+		return fmt.Errorf("Invalid server index")
+	}
+	config.Cache.SelectedServer = servers[chosenIndex-1].PublicKey
+	return nil
+}
+
+func promptUserforReversePort() {
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print("Choose port(s) for reverse VPN (separate multiple values with comma or empty for none): ")
+	text, _ := reader.ReadString('\n')
+	text = strings.TrimSpace(text)
+
 	if text == "" {
-		return 0
+		return
 	}
-	port, err := strconv.Atoi(text)
-	if err != nil {
-		log.Fatal(err)
+	config.Cache.ReverseVPNPorts = []int{}
+	if strings.Contains(text, ",") {
+		ports := strings.Split(text, ",")
+		for _, port := range ports {
+			port = strings.TrimSpace(port)
+			port, err := strconv.Atoi(port)
+			if err != nil {
+				log.Fatal(err)
+			}
+			config.Cache.ReverseVPNPorts = append(config.Cache.ReverseVPNPorts, port)
+		}
+	} else {
+		port, err := strconv.Atoi(text)
+		if err != nil {
+			log.Fatal(err)
+		}
+		config.Cache.ReverseVPNPorts = append(config.Cache.ReverseVPNPorts, port)
 	}
-	return port
+	return
 }
 
 func askYesNo(question string) string {
@@ -523,7 +569,7 @@ func getCjdnsIPv4(interfaceName string) string {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		fmt.Println("Error getting network interfaces:", err)
-		// logger.Errorf("Error getting network interfaces: %v", err)
+		logger.Errorf("Error getting network interfaces: %v", err)
 		return ""
 	}
 
@@ -532,7 +578,7 @@ func getCjdnsIPv4(interfaceName string) string {
 			addrs, err := iface.Addrs()
 			if err != nil {
 				fmt.Println("Error getting addresses for interface:", err)
-				// logger.Errorf("Error getting addresses for interface %s: %v", interfaceName, err)
+				logger.Errorf("Error getting addresses for interface %s: %v", interfaceName, err)
 				return ""
 			}
 
@@ -550,7 +596,7 @@ func getCjdnsIPv4(interfaceName string) string {
 	}
 
 	fmt.Printf("No IPv4 address found for %s\n", interfaceName)
-	// logger.Infof("No IPv4 address found for %s", interfaceName)
+	logger.Infof("No IPv4 address found for %s", interfaceName)
 	return ""
 }
 
@@ -563,14 +609,14 @@ func requestReverseVPNPort(ip string, port int) {
 	})
 	if err != nil {
 		fmt.Println("Error encoding JSON payload:", err)
-		// logger.Errorf("Error encoding JSON payload: %v", err)
+		logger.Errorf("Error encoding JSON payload: %v", err)
 		return
 	}
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(payload))
 	if err != nil {
 		fmt.Println("Error creating HTTP request:", err)
-		// logger.Errorf("Error creating HTTP request: %v", err)
+		logger.Errorf("Error creating HTTP request: %v", err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
@@ -579,35 +625,12 @@ func requestReverseVPNPort(ip string, port int) {
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Println("Error sending HTTP request:", err)
-		// logger.Errorf("Error sending HTTP request: %v", err)
+		logger.Errorf("Error sending HTTP request: %v", err)
 		return
 	}
 	defer resp.Body.Close()
 
 	fmt.Println("Reverse VPN response:", resp.Status)
-}
-
-func isPortAvailable(port int) bool {
-	command := fmt.Sprintf("netstat -tuln | grep ':%d '", port)
-	cmd := exec.Command("bash", "-c", command)
-	output, err := cmd.Output()
-	if err != nil {
-		fmt.Printf("Error checking port %d: %v\n", port, err)
-		return false
-	}
-
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		match := regexp.MustCompile(`:(\d+)`).FindStringSubmatch(line)
-		if len(match) > 1 {
-			extractedPort := match[1]
-			if extractedPort == strconv.Itoa(port) {
-				return false
-			}
-		}
-	}
-
-	return true
 }
 
 func isExcludedReverseVPNPort(port int) bool {
@@ -619,19 +642,46 @@ func isExcludedReverseVPNPort(port int) bool {
 	return false
 }
 
-func addPortToNFTables(port int) error {
-	command := fmt.Sprintf("nft add rule ip filter INPUT tcp dport %d accept", port)
-	cmd := exec.Command("sh", "-c", command)
+func loadConfig(reconfig bool) error {
+	_, err := os.Stat("config.json")
+	if os.IsNotExist(err) || reconfig {
+		if reconfig {
+			//Delete existing config file
+			os.Remove("config.json")
+		} else {
+			fmt.Println("Could not find config.json.")
+			logger.Info("Could not find config.json.")
+		}
 
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("error executing command: %v, output: %s", err, output)
+		// Create the file with default values
+		file, err := os.Create("config.json")
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+
+		// Prompt user for values
+		promptUserforConfig()
+		config.ServerPort = 8080
+
+		data, err := json.Marshal(config)
+		if err != nil {
+			return err
+		}
+
+		_, err = file.Write(data)
+		if err != nil {
+			return err
+		}
+
+	} else if err != nil {
+		return err
+	} else {
+		fmt.Println("Starting client with existing configuration...")
+		fmt.Println("run with --reconfig if you wish to reset it.")
+		fmt.Println("")
+		logger.Info("Starting client with existing config.json")
 	}
-
-	return nil
-}
-
-func loadconfig() error {
 	file, err := os.Open("config.json")
 	if err != nil {
 		return err
@@ -647,51 +697,77 @@ func loadconfig() error {
 }
 
 func main() {
-	log.Println("Starting PKT VPN client")
+	flag.Parse()
+	fmt.Println("***** PKT VPN Client *****")
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+	logFile, err := os.OpenFile("pktvpnclient.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err == nil {
+		logger.Out = logFile
+	} else {
+		logger.Info("Failed to log to file, using default stderr")
+	}
+	logger.Info("Starting pktVpnClient ...")
 
-	err := loadconfig()
+	reset := false
+	if *reconfig {
+		reset = true
+	}
+	err = loadConfig(reset)
 	if err != nil {
+		logger.Errorf("Error loading config.json: %v", err)
 		fmt.Println("Error loading config.json:", err)
 		return
 	}
 
 	if !checkCjdnsRunning() {
-		fmt.Println("Cjdns is not running")
 		startCjdns()
 	}
+	servers := getListOfVPNServers()
+	server := VPNServer{}
+	if config.Cache.SelectedServer == "" {
+		promptUserforServer(servers)
+	}
+	for _, s := range servers {
+		if s.PublicKey == config.Cache.SelectedServer {
+			server = s
+			break
+		}
+	}
+	// If SelectedServer still not set, mean it is not in the list anymore
+	if (server == VPNServer{}) {
+		fmt.Println("VPN server not in the list of active servers. Please select another one.")
+		promptUserforServer(servers)
+	}
 
-	server := getVPNServers()
-	if server != nil {
-		port := 0
+	publicKey, status := connectVPNServer(server.PublicKey, server.PublicIP, server.Name)
+	fmt.Println("VPN Connected Status:", status)
+	// logger.Infof("VPN Status: %v", status)
+
+	// Request reverse VPN port
+	if status {
+		for _, port := range config.Cache.ReverseVPNPorts {
+			requestReverseVPNPort(server.PublicIP, port)
+		}
 		for {
-			port = askPort()
-			if port != 0 && !isPortAvailable(port) {
-				fmt.Println("This port is already allocated.")
-				answer := askYesNo("Are you sure you want to use this port? (y/n)")
-				if answer == "y" {
+			// Sleep for one hour before the next authorization attempt
+			time.Sleep(1 * time.Hour)
+			fmt.Println("Renewing authorization...")
+			logger.Info("Renewing authorization")
+			tries := 0
+			for tries < 5 {
+				response := authorizeVPN(publicKey)
+				if response != 200 && response != 201 {
+					logger.Info("Authorization failed")
+				} else {
 					break
 				}
-			} else if !isExcludedReverseVPNPort(port) {
-				break
-			} else {
-				fmt.Println("This port cannot be used. Please choose another port.")
+				time.Sleep(5 * time.Second)
+				tries++
 			}
 		}
-
-		publicKey, status := connectVPNServer(server.PublicKey, server.PublicIP, server.Name)
-		fmt.Println("VPN Connected Status:", status)
-
-		if status && port != 0 {
-			requestReverseVPNPort(server.PublicIP, port)
-			if err := addPortToNFTables(port); err != nil {
-				fmt.Printf("Error adding port %d to nftables: %v\n", port, err)
-			} else {
-				fmt.Printf("Successfully added port %d to nftables\n", port)
-			}
-		}
-
-		authorizeVPNEveryHour(publicKey)
 	} else {
-		fmt.Println("No VPN servers found.")
+		fmt.Println("VPN connection failed, exiting ...")
+		logger.Info("exiting...")
 	}
 }
