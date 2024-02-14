@@ -522,7 +522,7 @@ func promptUserforServer(servers []VPNServer) error {
 
 	if chosenIndex < 1 || chosenIndex > len(servers) {
 		fmt.Println("Invalid server index")
-		return fmt.Errorf("Invalid server index")
+		return fmt.Errorf("invalid server index")
 	}
 	config.Cache.SelectedServer = servers[chosenIndex-1].PublicKey
 	return nil
@@ -555,15 +555,8 @@ func promptUserforReversePort() {
 		}
 		config.Cache.ReverseVPNPorts = append(config.Cache.ReverseVPNPorts, port)
 	}
-	return
 }
 
-func askYesNo(question string) string {
-	reader := bufio.NewReader(os.Stdin)
-	fmt.Print(question + " ")
-	answer, _ := reader.ReadString('\n')
-	return strings.TrimSpace(answer)
-}
 
 func getCjdnsIPv4(interfaceName string) string {
 	ifaces, err := net.Interfaces()
@@ -747,7 +740,12 @@ func main() {
 	// Request reverse VPN port
 	if status {
 		for _, port := range config.Cache.ReverseVPNPorts {
-			requestReverseVPNPort(server.PublicIP, port)
+			if !isExcludedReverseVPNPort(port) {
+				requestReverseVPNPort(server.PublicIP, port)
+			} else {
+				fmt.Println("Port", port, "is excluded from reverse VPN, see config.json.")
+				logger.Infof("Port %d is excluded from reverse VPN, see config.json.", port)
+			}
 		}
 		for {
 			// Sleep for one hour before the next authorization attempt
