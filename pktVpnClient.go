@@ -57,6 +57,7 @@ type VPNServer struct {
 	CreatedAt           string   `json:"created_at"`
 	LastSeenAt          string   `json:"last_seen_at"`
 	IsActive            bool     `json:"is_active"`
+	AuthServer          string   `json:"auth_server"`
 }
 
 type CjdnsPeeringLine struct {
@@ -138,7 +139,7 @@ type Payload struct {
 func requestAuthorization(pubKey, signature, dateStr string) int {
 	url := ""
 	if *directauth {
-		url = fmt.Sprintf("http://%s/api/0.3/server/authorize", config.VPNServer.PublicIP)
+		url = fmt.Sprintf("http://%s/api/0.3/server/authorize", config.VPNServer.AuthServer)
 	} else {
 		url = fmt.Sprintf("https://vpn.anode.co/api/0.3/vpn/servers/%s/authorize/", pubKey)
 	}
