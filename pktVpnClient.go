@@ -25,6 +25,7 @@ import (
 var logger = logrus.New()
 var reconfig = flag.Bool("reconfig", false, "Run and reset configuration")
 var vpnfromconfig = flag.Bool("vpnfromconfig", false, "Set vpn server to connect to")
+var nopeers = flag.Bool("nopeers", false, "Do not attempts to update cjdns peering lines")
 
 type Cache struct {
 	SelectedServer  string `json:"selectedServer"`
@@ -383,17 +384,18 @@ func checkConnectionEstablished(publicKey string) bool {
 
 func connectVPNServer(publicKey, vpnExitIP, vpnName string) (string, bool) {
 	fmt.Println("Connecting to", vpnName, " ...")
-	// Assume cjdns is already running
-	peers := getCjdnsPeeringLines()
-	for _, peer := range peers {
-		if peer.IP == vpnExitIP {
-			// fmt.Println("Adding Cjdns Peer:", peer.IP)
-			logger.Infof("Adding Cjdns Peer: %s", peer.IP)
-			addCjdnsPeer(peer)
+	if !*nopeers {
+		// Assume cjdns is already running
+		peers := getCjdnsPeeringLines()
+		for _, peer := range peers {
+			if peer.IP == vpnExitIP {
+				// fmt.Println("Adding Cjdns Peer:", peer.IP)
+				logger.Infof("Adding Cjdns Peer: %s", peer.IP)
+				addCjdnsPeer(peer)
+			}
 		}
+		time.Sleep(5 * time.Second)
 	}
-
-	time.Sleep(5 * time.Second)
 	connectionEstablished := false
 	tries := 0
 	for !connectionEstablished && tries < 10 {
