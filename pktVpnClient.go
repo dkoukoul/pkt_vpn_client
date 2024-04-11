@@ -26,6 +26,7 @@ var logger = logrus.New()
 var reconfig = flag.Bool("reconfig", false, "Run and reset configuration")
 var vpnfromconfig = flag.Bool("vpnfromconfig", false, "Set vpn server to connect to")
 var nopeers = flag.Bool("nopeers", false, "Do not attempts to update cjdns peering lines")
+var directauth = flag.Bool("directauth", false, "Will try to authorize directly to the server, without using the coord server")
 
 type Cache struct {
 	SelectedServer  string `json:"selectedServer"`
@@ -135,7 +136,13 @@ type Payload struct {
 }
 
 func requestAuthorization(pubKey, signature, dateStr string) int {
-	url := fmt.Sprintf("https://vpn.anode.co/api/0.3/vpn/servers/%s/authorize/", pubKey)
+	url := ""
+	if *directauth {
+		url = fmt.Sprintf("http://[%s]/api/0.3/server/authorize", config.VPNServer.PublicIP)
+	} else {
+		url = fmt.Sprintf("https://vpn.anode.co/api/0.3/vpn/servers/%s/authorize/", pubKey)
+	}
+	
 
 	date, _ := strconv.Atoi(dateStr)
 	payload := &Payload{
