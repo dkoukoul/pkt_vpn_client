@@ -139,7 +139,7 @@ type Payload struct {
 func requestAuthorization(pubKey, signature, dateStr string) int {
 	url := ""
 	if *directauth {
-		url = fmt.Sprintf("http://%s/api/0.3/server/authorize", config.VPNServer.AuthServer)
+		url = fmt.Sprintf("http://%s/api/0.3/server/authorize/", config.VPNServer.AuthServer)
 	} else {
 		url = fmt.Sprintf("https://vpn.anode.co/api/0.3/vpn/servers/%s/authorize/", pubKey)
 	}
