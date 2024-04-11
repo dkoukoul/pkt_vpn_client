@@ -24,6 +24,7 @@ import (
 
 var logger = logrus.New()
 var reconfig = flag.Bool("reconfig", false, "Run and reset configuration")
+var vpnfromconfig = flag.Bool("vpnfromconfig", false, "Set vpn server to connect to")
 
 type Cache struct {
 	SelectedServer  string `json:"selectedServer"`
@@ -33,6 +34,7 @@ type Config struct {
 	ServerPort              int    `json:"serverPort"`
 	CjdnsPath               string `json:"cjdnsPath"`
 	ExcludedReverseVPNPorts []int  `json:"excludedReverseVPNPorts"`
+	VPNServer               VPNServer `json:"vpnserver"`
 	Cache                   Cache  `json:"cache"`
 }
 
@@ -716,21 +718,26 @@ func main() {
 	if !checkCjdnsRunning() {
 		startCjdns()
 	}
-	servers := getListOfVPNServers()
 	server := VPNServer{}
-	if config.Cache.SelectedServer == "" {
-		promptUserforServer(servers)
-	}
-	for _, s := range servers {
-		if s.PublicKey == config.Cache.SelectedServer {
-			server = s
-			break
+	if *vpnfromconfig {
+		server = config.VPNServer
+	} else {
+		servers := getListOfVPNServers()
+	
+		if config.Cache.SelectedServer == "" {
+			promptUserforServer(servers)
 		}
-	}
-	// If SelectedServer still not set, mean it is not in the list anymore
-	if (server == VPNServer{}) {
-		fmt.Println("VPN server not in the list of active servers. Please select another one.")
-		promptUserforServer(servers)
+		for _, s := range servers {
+			if s.PublicKey == config.Cache.SelectedServer {
+				server = s
+				break
+			}
+		}
+		// If SelectedServer still not set, mean it is not in the list anymore
+		if (server == VPNServer{}) {
+			fmt.Println("VPN server not in the list of active servers. Please select another one.")
+			promptUserforServer(servers)
+		}
 	}
 
 	publicKey, status := connectVPNServer(server.PublicKey, server.PublicIP, server.Name)
