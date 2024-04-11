@@ -33,11 +33,11 @@ type Cache struct {
 	ReverseVPNPorts []int  `json:"reverseVPNPorts"`
 }
 type Config struct {
-	ServerPort              int    `json:"serverPort"`
-	CjdnsPath               string `json:"cjdnsPath"`
-	ExcludedReverseVPNPorts []int  `json:"excludedReverseVPNPorts"`
+	ServerPort              int       `json:"serverPort"`
+	CjdnsPath               string    `json:"cjdnsPath"`
+	ExcludedReverseVPNPorts []int     `json:"excludedReverseVPNPorts"`
 	VPNServer               VPNServer `json:"vpnserver"`
-	Cache                   Cache  `json:"cache"`
+	Cache                   Cache     `json:"cache"`
 }
 
 var config Config
@@ -138,11 +138,10 @@ type Payload struct {
 func requestAuthorization(pubKey, signature, dateStr string) int {
 	url := ""
 	if *directauth {
-		url = fmt.Sprintf("http://[%s]/api/0.3/server/authorize", config.VPNServer.PublicIP)
+		url = fmt.Sprintf("http://%s/api/0.3/server/authorize", config.VPNServer.PublicIP)
 	} else {
 		url = fmt.Sprintf("https://vpn.anode.co/api/0.3/vpn/servers/%s/authorize/", pubKey)
 	}
-	
 
 	date, _ := strconv.Atoi(dateStr)
 	payload := &Payload{
@@ -568,7 +567,6 @@ func promptUserforReversePort() {
 	}
 }
 
-
 func getCjdnsIPv4(interfaceName string) string {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -732,7 +730,7 @@ func main() {
 		server = config.VPNServer
 	} else {
 		servers := getListOfVPNServers()
-	
+
 		if config.Cache.SelectedServer == "" {
 			promptUserforServer(servers)
 		}
