@@ -11,7 +11,8 @@ This is a VPN client for the PKT network. It uses the cjdns protocol to establis
 - Check if the VPN connection is established.
 - Check the status of the VPN connection.
 - Request a reverse VPN port.
-
+- Can run as a daemon, with auto connect. For this it expects to find /etc/pkt_vpn.json and /etc/cjdroute.conf.
+  
 ## Usage
 
 

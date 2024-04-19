@@ -24,9 +24,7 @@ import (
 
 var logger = logrus.New()
 var reconfig = flag.Bool("reconfig", false, "Run and reset configuration")
-var vpnfromconfig = flag.Bool("vpnfromconfig", false, "Set vpn server to connect to")
-var nopeers = flag.Bool("nopeers", false, "Do not attempts to update cjdns peering lines")
-var directauth = flag.Bool("directauth", false, "Will try to authorize directly to the server, without using the coord server")
+var directConnection = false // Direct connection to VPN server
 
 type Cache struct {
 	SelectedServer  string `json:"selectedServer"`
@@ -37,10 +35,33 @@ type Config struct {
 	CjdnsPath               string    `json:"cjdnsPath"`
 	ExcludedReverseVPNPorts []int     `json:"excludedReverseVPNPorts"`
 	VPNServer               VPNServer `json:"vpnserver"`
+	MyPubKey                string    `json:"myPubKey"`
 	Cache                   Cache     `json:"cache"`
 }
 
+type CjdrouteConf struct {
+	PublicKey string `json:"publicKey"`
+	ipv6      string `json:"ipv6"`
+}
+
+type Payload struct {
+	Date            int64   `json:"date"`
+	ClientPublicKey *string `json:"clientPublicKey,omitempty"`
+}
+
+type VpnExit struct {
+	PublicKey  string `json:"public_key"`
+	AuthServer string `json:"auth_server"`
+}
+type PktVpnConfig struct {
+	VpnExit    		VpnExit `json:"vpn_exit"`
+	DomainName 		string  `json:"domain_name"`
+	ReverseVPNPorts []int   `json:"reverseVPNPorts"`
+}
+
 var config Config
+var cjdrouteConf CjdrouteConf
+var pktVpnConfig PktVpnConfig
 
 type VPNServer struct {
 	PublicKey           string   `json:"public_key"`
@@ -132,26 +153,29 @@ func sign(digest []byte) map[string]interface{} {
 	return sendUDP(benc)
 }
 
-type Payload struct {
-	Date int `json:"date"`
-}
-
 func requestAuthorization(pubKey, signature, dateStr string) int {
 	url := ""
-	if *directauth {
-		url = fmt.Sprintf("http://%s/api/0.3/server/authorize/", config.VPNServer.AuthServer)
+	date, _ := strconv.ParseInt(dateStr, 10, 64)
+
+	data := []byte{}
+	if directConnection {
+		url = fmt.Sprintf("http://%s/api/0.3/server/authorize/", pktVpnConfig.VpnExit.AuthServer)
+		payload := &Payload{
+			Date:            date,
+			ClientPublicKey: &cjdrouteConf.PublicKey,
+		}
+		jsonData, _ := json.Marshal(payload)
+		data = jsonData
 	} else {
+		payload := &Payload{
+			Date: date,
+		}
 		url = fmt.Sprintf("https://vpn.anode.co/api/0.3/vpn/servers/%s/authorize/", pubKey)
+		jsonData, _ := json.Marshal(payload)
+		data = jsonData
 	}
 
-	date, _ := strconv.Atoi(dateStr)
-	payload := &Payload{
-		Date: date,
-	}
-
-	jsonData, _ := json.Marshal(payload)
-
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
 	if err != nil {
 		fmt.Println("Error creating HTTP request:", err)
 		return 0
@@ -165,6 +189,7 @@ func requestAuthorization(pubKey, signature, dateStr string) int {
 		fmt.Println("Error making HTTP request:", err)
 		return 0
 	}
+
 	defer resp.Body.Close()
 
 	if (resp.StatusCode == http.StatusOK) || (resp.StatusCode == http.StatusCreated) {
@@ -173,6 +198,23 @@ func requestAuthorization(pubKey, signature, dateStr string) int {
 	} else {
 		fmt.Println("VPN Auth request failed with status code", resp.StatusCode)
 		logger.Errorf("Request failed with status code %d and message %s", resp.StatusCode, resp.Status)
+
+		// Print the entire response body
+		bodyBytes, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			logger.Errorf("Error reading response body: %v", err)
+		} else {
+			bodyString := string(bodyBytes)
+			logger.Errorf("Response body: %s", bodyString)
+		}
+
+		// Print the request that was sent
+		logger.Errorf("Request sent: %v", req)
+
+		// Print any error messages returned by the Go http client
+		if err != nil {
+			logger.Errorf("HTTP client error: %v", err)
+		}
 	}
 
 	return resp.StatusCode
@@ -277,14 +319,31 @@ func authorizeVPN(vpnKey string) int {
 	fmt.Println("Authorizing VPN ...")
 	logger.Infof("Authorizing VPN %s", vpnKey)
 	now := time.Now().UnixNano() / int64(time.Millisecond)
-	jsonDate, err := json.Marshal(map[string]int64{"date": now})
-	if err != nil {
-		fmt.Println("Error encoding JSON date:", err)
-		logger.Errorf("Error encoding JSON date: %v", err)
-		return 0
+	jsonBytes := []byte{}
+
+	if directConnection {
+		var err error
+		payload := &Payload{
+			Date:            now,
+			ClientPublicKey: &cjdrouteConf.PublicKey,
+		}
+		jsonBytes, err = json.Marshal(payload)
+		if err != nil {
+			fmt.Println("Error encoding JSON date:", err)
+			logger.Errorf("Error encoding JSON date: %v", err)
+			return 0
+		}
+	} else {
+		jsonDate, err := json.Marshal(map[string]int64{"date": now})
+		if err != nil {
+			fmt.Println("Error encoding JSON date:", err)
+			logger.Errorf("Error encoding JSON date: %v", err)
+			return 0
+		}
+		jsonBytes = jsonDate
 	}
 
-	signature := getCjdnsSignature(jsonDate)
+	signature := getCjdnsSignature(jsonBytes)
 
 	if signature == "" {
 		fmt.Println("Failed to get Cjdns signature")
@@ -391,7 +450,7 @@ func checkConnectionEstablished(publicKey string) bool {
 
 func connectVPNServer(publicKey, vpnExitIP, vpnName string) (string, bool) {
 	fmt.Println("Connecting to", vpnName, " ...")
-	if !*nopeers {
+	if !directConnection {
 		// Assume cjdns is already running
 		peers := getCjdnsPeeringLines()
 		for _, peer := range peers {
@@ -444,7 +503,7 @@ func connectVPNServer(publicKey, vpnExitIP, vpnName string) (string, bool) {
 }
 
 func startCjdns() {
-	cjdrouteConf, err := ioutil.ReadFile(config.CjdnsPath + "cjdroute.conf")
+	cjdrouteConf, err := os.ReadFile(config.CjdnsPath + "cjdroute.conf")
 	if err != nil {
 		fmt.Println("Error reading cjdroute.conf:", err)
 		logger.Errorf("Error reading cjdroute.conf: %v", err)
@@ -468,8 +527,15 @@ func checkCjdnsRunning() bool {
 	cmd := exec.Command("pgrep", "cjdroute")
 	output, err := cmd.Output()
 	if err != nil {
-		logger.Info("Cjdns is not running")
-		return false
+		for {
+			logger.Info("Cjdns is not running")
+			if directConnection {
+				time.Sleep(5 * time.Second)
+				continue
+			} else {
+				return false
+			}
+		}
 	}
 
 	if len(strings.TrimSpace(string(output))) > 0 {
@@ -646,56 +712,94 @@ func isExcludedReverseVPNPort(port int) bool {
 }
 
 func loadConfig(reconfig bool) error {
-	_, err := os.Stat("config.json")
-	if os.IsNotExist(err) || reconfig {
-		if reconfig {
-			//Delete existing config file
-			os.Remove("config.json")
-		} else {
-			fmt.Println("Could not find config.json.")
-			logger.Info("Could not find config.json.")
+	// Check if /etc/pkt_vpn.json exists
+	_, err := os.Stat("/etc/pkt_vpn.json")
+	if err == nil {
+		// This means pkt_vpn.json exists
+		// we will try to load the params for a direct VPN connection
+		fmt.Println("Starting PKT VPN client with existing configuration for direct connection...")
+		logger.Info("Found pkt_vpn.json, entering direct connection mode.")
+		directConnection = true
+		data, err := os.ReadFile("/etc/pkt_vpn.json")
+		if err != nil {
+			return err
 		}
 
-		// Create the file with default values
-		file, err := os.Create("config.json")
+		err = json.Unmarshal(data, &pktVpnConfig)
+		if err != nil {
+			return err
+		}
+		
+		_, err = os.Stat("/etc/cjdroute.conf")
+		if err == nil {
+
+			data, err := os.ReadFile("/etc/cjdroute.conf")
+			if err != nil {
+				return err
+			}
+			err = json.Unmarshal(data, &cjdrouteConf)
+			if err != nil {
+				return err
+			}
+		} else {
+			logger.Errorln("/etc/cjdroute.conf NOT found, can not continue...")
+			return err
+		}
+
+		return nil
+	} else {
+		_, err = os.Stat("config.json")
+		if os.IsNotExist(err) || reconfig {
+			if reconfig {
+				//Delete existing config file
+				os.Remove("config.json")
+			} else {
+				fmt.Println("Could not find config.json.")
+				logger.Info("Could not find config.json.")
+			}
+	
+			// Create the file with default values
+			file, err := os.Create("config.json")
+			if err != nil {
+				return err
+			}
+			defer file.Close()
+	
+			// Prompt user for values
+			promptUserforConfig()
+			config.ServerPort = 8080
+	
+			data, err := json.Marshal(config)
+			if err != nil {
+				return err
+			}
+	
+			_, err = file.Write(data)
+			if err != nil {
+				return err
+			}
+	
+		} else if err != nil {
+			return err
+		} else {
+			fmt.Println("Starting client with existing configuration...")
+			fmt.Println("run with --reconfig if you wish to reset it.")
+			fmt.Println("")
+			logger.Info("Starting client with existing config.json")
+		}
+		file, err := os.Open("config.json")
 		if err != nil {
 			return err
 		}
 		defer file.Close()
-
-		// Prompt user for values
-		promptUserforConfig()
-		config.ServerPort = 8080
-
-		data, err := json.Marshal(config)
+	
+		decoder := json.NewDecoder(file)
+		err = decoder.Decode(&config)
 		if err != nil {
 			return err
 		}
-
-		_, err = file.Write(data)
-		if err != nil {
-			return err
-		}
-
-	} else if err != nil {
-		return err
-	} else {
-		fmt.Println("Starting client with existing configuration...")
-		fmt.Println("run with --reconfig if you wish to reset it.")
-		fmt.Println("")
-		logger.Info("Starting client with existing config.json")
 	}
-	file, err := os.Open("config.json")
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	decoder := json.NewDecoder(file)
-	err = decoder.Decode(&config)
-	if err != nil {
-		return err
-	}
+	
 	return nil
 }
 
@@ -716,19 +820,28 @@ func main() {
 	if *reconfig {
 		reset = true
 	}
+
 	err = loadConfig(reset)
 	if err != nil {
-		logger.Errorf("Error loading config.json: %v", err)
-		fmt.Println("Error loading config.json:", err)
+		logger.Errorf("Error loading configuration: %v", err)
+		fmt.Println("Error loading configuration:", err)
 		return
 	}
 
 	if !checkCjdnsRunning() {
 		startCjdns()
 	}
+
 	server := VPNServer{}
-	if *vpnfromconfig {
-		server = config.VPNServer
+	if directConnection {
+		split := strings.Split(pktVpnConfig.VpnExit.AuthServer, ":")
+		ipv6 := strings.Join(split[:8], ":")
+		server = VPNServer{
+			PublicKey:  pktVpnConfig.VpnExit.PublicKey,
+			AuthServer: pktVpnConfig.VpnExit.AuthServer,
+			PublicIP:   ipv6,
+			Name:       pktVpnConfig.VpnExit.PublicKey,
+		}
 	} else {
 		servers := getListOfVPNServers()
 
@@ -754,7 +867,11 @@ func main() {
 
 	// Request reverse VPN port
 	if status {
-		for _, port := range config.Cache.ReverseVPNPorts {
+		reversePorts := config.Cache.ReverseVPNPorts
+		if directConnection {
+			reversePorts = pktVpnConfig.ReverseVPNPorts
+		}
+		for _, port := range reversePorts {
 			if !isExcludedReverseVPNPort(port) {
 				requestReverseVPNPort(server.PublicIP, port)
 			} else {
