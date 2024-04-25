@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -54,8 +56,8 @@ type VpnExit struct {
 	AuthServer string `json:"auth_server"`
 }
 type PktVpnConfig struct {
-	VpnExit    		VpnExit `json:"vpn_exit"`
-	DomainName 		string  `json:"domain_name"`
+	VpnExit         VpnExit `json:"vpn_exit"`
+	DomainName      string  `json:"domain_name"`
 	ReverseVPNPorts []int   `json:"reverseVPNPorts"`
 }
 
@@ -88,6 +90,10 @@ type CjdnsPeeringLine struct {
 	Password  string `json:"password"`
 	PublicKey string `json:"publicKey"`
 	Name      string `json:"name"`
+}
+
+type AuthResponse struct {
+	Nameservers []string `json:"nameservers"`
 }
 
 func sendUDP(message []byte) map[string]interface{} {
@@ -153,6 +159,15 @@ func sign(digest []byte) map[string]interface{} {
 	return sendUDP(benc)
 }
 
+func addNameservers(nameservers []string) {
+	logger.Infof("Setting nameservers: %s", strings.Join(nameservers, "\n"))
+	// Write the nameservers to /etc/resolv.conf file
+	err := ioutil.WriteFile("/etc/resolv.conf", []byte(strings.Join(nameservers, "\n")), 0644)
+	if err != nil {
+		logger.Errorf("Error writing to /etc/resolv.conf: %v", err)
+	}
+}
+
 func requestAuthorization(pubKey, signature, dateStr string) int {
 	url := ""
 	date, _ := strconv.ParseInt(dateStr, 10, 64)
@@ -195,6 +210,36 @@ func requestAuthorization(pubKey, signature, dateStr string) int {
 	if (resp.StatusCode == http.StatusOK) || (resp.StatusCode == http.StatusCreated) {
 		fmt.Println("VPN client Authorized")
 		logger.Infof("VPN Authorized: %s", pubKey)
+		//Read response for nameservers
+		var authResponse AuthResponse
+		bodyBytes, err := ioutil.ReadAll(resp.Body)
+		defaultNameserver := []string{"nameserver 8.8.8.8"}
+		if err != nil {
+			logger.Errorf("Error reading response body: %v", err)
+			// Add default nameservers
+			addNameservers(defaultNameserver)
+		} else {
+			err = json.Unmarshal(bodyBytes, &authResponse)
+			if err != nil {
+				logger.Errorf("Error decoding Authorization response: %v", err)
+				addNameservers(defaultNameserver)
+			} else {
+				var newResolv []string
+				for _, ns := range authResponse.Nameservers {
+					ip := net.ParseIP(ns)
+					if ip == nil {
+						logger.Errorf("Invalid IP address: %s", ns)
+						continue
+					}
+					newResolv = append(newResolv, "nameserver "+ns)
+				}
+				if len(newResolv) > 0 {
+					addNameservers(newResolv)
+				} else {
+					addNameservers(defaultNameserver)
+				}
+			}
+		}
 	} else {
 		fmt.Println("VPN Auth request failed with status code", resp.StatusCode)
 		logger.Errorf("Request failed with status code %d and message %s", resp.StatusCode, resp.Status)
@@ -729,21 +774,35 @@ func loadConfig(reconfig bool) error {
 		if err != nil {
 			return err
 		}
-		
-		_, err = os.Stat("/etc/cjdroute.conf")
-		if err == nil {
 
-			data, err := os.ReadFile("/etc/cjdroute.conf")
-			if err != nil {
+		for i := 0; i < 10; i++ {
+			_, err := os.Stat("/etc/cjdroute.conf")
+			if err == nil {
+				data, err := os.ReadFile("/etc/cjdroute.conf")
+				if err != nil {
+					return err
+				}
+				re := regexp.MustCompile(`"publicKey"\s*:\s*"([^"]*)"`)
+				match := re.FindStringSubmatch(string(data))
+				if len(match) < 2 {
+					logger.Errorln("publicKey not found in /etc/cjdroute.conf")
+					return errors.New("publicKey not found in /etc/cjdroute.conf")
+				}
+
+				cjdrouteConf.PublicKey = match[1]
+				break
+			} else if os.IsNotExist(err) {
+				fmt.Println("/etc/cjdroute.conf not found, waiting for it to be created ...")
+				time.Sleep(2 * time.Second)
+				continue
+			} else {
 				return err
 			}
-			err = json.Unmarshal(data, &cjdrouteConf)
-			if err != nil {
-				return err
-			}
-		} else {
-			logger.Errorln("/etc/cjdroute.conf NOT found, can not continue...")
-			return err
+		}
+
+		if cjdrouteConf.PublicKey == "" {
+			logger.Errorln("/etc/cjdroute.conf NOT found. Exiting...")
+			return errors.New("/etc/cjdroute.conf NOT found. Exiting")
 		}
 
 		return nil
@@ -757,28 +816,28 @@ func loadConfig(reconfig bool) error {
 				fmt.Println("Could not find config.json.")
 				logger.Info("Could not find config.json.")
 			}
-	
+
 			// Create the file with default values
 			file, err := os.Create("config.json")
 			if err != nil {
 				return err
 			}
 			defer file.Close()
-	
+
 			// Prompt user for values
 			promptUserforConfig()
 			config.ServerPort = 8080
-	
+
 			data, err := json.Marshal(config)
 			if err != nil {
 				return err
 			}
-	
+
 			_, err = file.Write(data)
 			if err != nil {
 				return err
 			}
-	
+
 		} else if err != nil {
 			return err
 		} else {
@@ -792,14 +851,14 @@ func loadConfig(reconfig bool) error {
 			return err
 		}
 		defer file.Close()
-	
+
 		decoder := json.NewDecoder(file)
 		err = decoder.Decode(&config)
 		if err != nil {
 			return err
 		}
 	}
-	
+
 	return nil
 }
 
